@@ -5,7 +5,7 @@ import time
 
 import pygame
 
-from .agents.random_agent import RandomAgent
+from .agents.simple_reactive_agent import SimpleAgent # alterar tipo de agente aqui e na linha 120
 from .agents.manual import key_to_aim_action, key_to_move_action
 from .config import RenderConfig, WorldConfig
 from .core.actions import Action
@@ -117,7 +117,7 @@ def run_app() -> None:
                     elif buttons["manual"].contains(event.pos):
                         start_game(None, "Manual")
                     elif buttons["intelligent"].contains(event.pos):
-                        start_game(RandomAgent(seed=map_size), "Agente inteligente")
+                        start_game(SimpleAgent(seed=map_size), "Agente inteligente")
                     elif buttons["quit"].contains(event.pos):
                         running = False
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
