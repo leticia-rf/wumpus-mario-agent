@@ -15,7 +15,7 @@ class StateAgent(BaseAgent):
     comeca: mapa vazio, tudo FALSE, posicao inicial (N,1): visitado e seguro
 
     -> atualizar mapa percepcoes
-       -> pegar vizinhos, excluindo as paredes
+       -> pega os vizinhos (ja excluindo as paredes)
        -> marcar percepcoes
 
     -> decidir proxima celula a partir do mapa
@@ -34,44 +34,106 @@ class StateAgent(BaseAgent):
         row, col = pos
         neighbors = [] # vetor de tuplas com a posicao
         
-        # celula de cima
-        if row > 1: 
-            neighbors.append((row - 1, col)) # append adiciona ao final da lista
-
-        # celula de baixo
-        if self.N is None or row < self.N:
+        if row > 1:                            # celula de cima
+            neighbors.append((row - 1, col))   
+        if row < self.N:                       # celula de baixo
             neighbors.append((row + 1, col))
-
-        # celula da esquerda
-        if col > 1:
+        if col > 1:                            # celula da esquerda
             neighbors.append((row, col - 1))
-
-        # celula da direita
-        if self.N is None or col < self.N:
+        if col < self.N:                       # celula da direita
             neighbors.append((row, col + 1))
         
-        return neighbors
-
+        return neighbors # retorna a lista de coordenadas das celulas vizinhas
 
     def _update_map(self, percept: Percept) -> None:
-        current_pos = percept.position.as_tuple()
-        row, col = current_pos
+        pos = percept.position.as_tuple()
 
-        # descobre e armazena o tamanho do mapa logo no inicio
-        if self.N is None:
-            self.N = row
-        
+        # insere posicao atual no mapa, se nao existia
+        if pos not in self.map:
+            cell = self.map.setdefault(pos, {
+                "visited": False,
+                "safe": None,
+                "pit": None,
+                "bowser": None,
+                "pit_candidates": set(),
+                "bowser_candidates": set(),
+            })
+
         # marca a posicao atual como visitada e segura
-        self.mapa[current_pos]["visited"] = True
-        self.mapa[current_pos]["safe"] = True
+        cell["visited"] = True
+        cell["safe"] = True
+        cell["pit"] = False
+        cell["bowser"] = False
 
-        neighbors = self._neighbors(current_pos)
+        # para cada coordenada vizinha, se nao esta no mapa, cria
+        neighbors = self._neighbors(pos)
+        for n in neighbors: 
+            self.map.setdefault(n, {
+                "visited": False,
+                "safe": None,
+                "pit": None,
+                "bowser": None,
+                "pit_candidates": set(),
+                "bowser_candidates": set(),
+            })
+        
+        # PIT (breeze)
+        if percept.breeze:
+            cell["pit_candidates"] = { 
+                n for n in neighbors                       # adiciona vizinho como condidato 
+                if self.map[n]["pit"] is not False         # se pit ja nao esta marcado como falso
+            }
+        else:
+            for n in neighbors:
+                self.map[n]["pit"] = False
 
-        # ....
+        # BOWSER (stink)
+        if percept.stink:
+            cell["bowser_candidates"] = {
+                n for n in neighbors
+                if self.map[n]["bowser"] is not False
+            }
+        else:
+            for n in neighbors:
+                self.map[n]["bowser"] = False
+
+        # safe
+        if not percept.breeze and not percept.stink:
+            for n in neighbors:
+                self.map[n]["safe"] = True
+
+        # limpeza + inferencia global
+        for pos, ccell in self.map.items():                # para cada item do mapa
+
+            if ccell["pit_candidates"]: 
+                ccell["pit_candidates"] = { 
+                    n for n in ccell["pit_candidates"]     # atualiza candidatas com pit ainda nao falso
+                    if self.map[n]["pit"] is not False 
+                }
+                if len(ccell["pit_candidates"]) == 1:      # se sobrou somente uma candidata, marca pit como true
+                    self.map[next(iter(ccell["pit_candidates"]))]["pit"] = True
+
+            if ccell.get("bowser_candidates"):
+                if ccell["bowser_candidates"]: 
+                    ccell["bowser_candidates"] = { 
+                        n for n in ccell["bowser_candidates"] 
+                        if self.map[n]["bowser"] is not False 
+                    }
+                if len(ccell["bowser_candidates"]) == 1: 
+                    self.map[next(iter(ccell["bowser_candidates"]))]["bowser"] = True
 
 
     def act(self, percept: Percept, legal_actions: list[Action]) -> Action:
-        
+        # descobre e armazena o tamanho do mapa
+        if self.N is None:
+            self.N = percept.position.row
+
+        # atualiza o mapa
+        self._update_map(percept)
+
+
+        # return self._choose_action(percept)
+
         if percept.glitter:
             return Action.RESCUE
 
