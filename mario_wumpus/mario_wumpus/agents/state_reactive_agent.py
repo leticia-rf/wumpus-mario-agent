@@ -34,6 +34,14 @@ class StateAgent(BaseAgent):
         self.just_shot = False                # se atirou no turno atual
 
         print("Agente Reativo com Estados!")
+
+    def reset(self) -> None:
+        self.map.clear()
+        self.N = None
+        self.shot_position = None
+        self.path = []
+        self.is_aiming = False
+        self.just_shot = False
  
 
     def _neighbors(self, pos: tuple[int, int]) -> list[tuple[int, int]]:
