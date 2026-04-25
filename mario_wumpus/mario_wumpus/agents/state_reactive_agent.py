@@ -27,7 +27,12 @@ class StateAgent(BaseAgent):
         self.rng = random.Random(seed) 
         self.map = {} # dicionario 
         self.N = None # null
-        self.last_shot_position = None
+
+        self.shot_position = None
+        self.path = []                        # pilha com o caminho percorrido
+        self.is_aiming = False                # se mirou no turno anterior
+        self.just_shot = False                # se atirou no turno atual
+
         print("Agente Reativo com Estados!")
  
 
@@ -45,6 +50,7 @@ class StateAgent(BaseAgent):
             neighbors.append((row, col + 1))
         
         return neighbors # retorna a lista de coordenadas das celulas vizinhas
+
 
     def _update_map(self, percept: Percept) -> None:
         # define o tamanho do mapa logo no primeiro turno
@@ -98,16 +104,14 @@ class StateAgent(BaseAgent):
             for n in neighbors:
                 self.map[n]["safe"] = True
 
-        # suspeitas -> adiciona vizinhos como condidatos
+        # suspeitas -> adiciona vizinhos como candidatos
         if percept.breeze:
-            self.map[n]["bowser"] = False
             cell["pit_candidates"] = { 
                 n for n in neighbors 
                 if self.map[n]["pit"] is not False and self.map[n]["safe"] is not True
             } 
 
         if percept.stink:
-            self.map[n]["pit"] = False
             cell["bowser_candidates"] = {
                 n for n in neighbors
                 if self.map[n]["bowser"] is not False and self.map[n]["safe"] is not True
@@ -141,12 +145,13 @@ class StateAgent(BaseAgent):
                 if c["pit"] is False:                      # se a célula não tem poço, ela vira segura
                     c["safe"] = True
 
-        # bowser nao morreu
-        elif self.last_shot_position is not None:
-            self.map[self.last_shot_position]["bowser"] = False
+        # se bowser nao morreu e acabou de atirar
+        elif self.just_shot and self.shot_position:
+            self.map[self.shot_position]["bowser"] = False
 
-        # reseta a posição do tiro
-        self.last_shot_position = None
+        # reseta a posição e o estado do tiro
+        self.shot_position = None
+        self.just_shot = False
 
 
     def act(self, percept: Percept, legal_actions: list[Action]) -> Action:
@@ -158,31 +163,44 @@ class StateAgent(BaseAgent):
         
         self._update_map(percept)
 
-        # atirar no bowser (mirar certo se estiver na parede)
+        if self.is_aiming:
+            self.is_aiming = False
+            self.just_shot = True
+            return Action.SHOOT
+        
+        # no backtracking, ir removendo o caminho
+        # nos outros return, ir adicionando o caminho
+        
 
-        # continuar no mesmo sentido e
-        # voltar quando vizinhos sao possiveis pocos e 
-        # arriscar qnd nao tiver mais saida
+        valid_neighbors = self._neighbors(pos)
 
         if percept.stink and percept.has_fireball:
-            cell = self.map.get(pos, {})
-            bowser_candidates = cell.get("bowser_candidates", set())
-
-            # evita celulas ja provadas estar sem o bowser
-            valid_targets = [
-                n for n in bowser_candidates
+            targets = [                                    # celulas alvos, possiveis de ter o bowser
+                n for n in self.map.get(pos, {}).get("bowser_candidates", set())
                 if self.map.get(n, {}).get("bowser") is not False
             ]
 
-            if valid_targets:
-                target = self.rng.choice(valid_targets)    # se tem varios, escolhe um
-                self.last_shot_position = target
+            confirmed = [
+                n for n in targets
+                if self.map.get(n, {}).get("bowser") is True
+            ]
+            if confirmed:
+                targets = confirmed
+
+            if targets:
+                target = self.rng.choice(targets)          # se tiver varios, escolhe um 
+                self.shot_position = target
+                self.is_aiming = True
                 
-                return Action.SHOOT
+                d_row = target[0] - pos[0]                 # calcula a direcao do alvo para mirar
+                d_col = target[1] - pos[1]
 
+                if d_row < 0: return Action.AIM_UP
+                if d_row > 0: return Action.AIM_DOWN
+                if d_col > 0: return Action.AIM_RIGHT
+                if d_col < 0: return Action.AIM_LEFT
 
-        vizinhos_validos = self._neighbors(pos)
-
+        """"
         candidates = [
             (Action.MOVE_UP, (row - 1, col)),
             (Action.MOVE_RIGHT, (row, col + 1)),
@@ -192,7 +210,28 @@ class StateAgent(BaseAgent):
 
         valid_moves = [
             (act, p) for act, p in candidates 
-            if p in vizinhos_validos
+            if p in valid_neighbors
         ]
 
-       
+        safe_unvisited = [
+            (act, p) for act, p in valid_moves 
+            if self.map[p]["safe"] is True and not self.map[p]["visited"]
+        ]
+        safe_visited = [
+            (act, p) for act, p in valid_moves 
+            if self.map[p]["safe"] is True
+        ]
+        unknown_moves = [
+            (act, p) for act, p in valid_moves 
+            if self.map[p]["safe"] is not True and self.map[p]["pit"] is not True and self.map[p]["bowser"] is not True
+        ]
+
+        if safe_unvisited:
+            return self.rng.choice(safe_unvisited)[0]
+        if safe_visited:
+            return self.rng.choice(safe_visited)[0]
+        if unknown_moves:
+            return self.rng.choice(unknown_moves)[0]
+
+        return self.rng.choice(valid_moves)[0] if valid_moves else Action.WAIT
+        """
