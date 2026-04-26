@@ -119,7 +119,7 @@ class StateAgent(BaseAgent):
                 if self.map[n]["pit"] is not False and self.map[n]["safe"] is not True
             } 
 
-        if percept.stink:
+        if percept.stink and not any(c.get("bowser") is True for c in self.map.values()):
             cell["bowser_candidates"] = {
                 n for n in neighbors
                 if self.map[n]["bowser"] is not False and self.map[n]["safe"] is not True
@@ -148,7 +148,7 @@ class StateAgent(BaseAgent):
                     n for n in c["pit_candidates"] 
                     if self.map[n]["pit"] is not False and self.map[n]["safe"] is not True
                 }
-                # se sobrou so 1 candidato, achou o poco
+                # se sobrou so 1 candidato, achou um poco
                 if len(c["pit_candidates"]) == 1: 
                     self.map[next(iter(c["pit_candidates"]))]["pit"] = True
 
@@ -160,6 +160,8 @@ class StateAgent(BaseAgent):
                 # se sobrou so 1 candidato, achou o bowser
                 if len(c["bowser_candidates"]) == 1: 
                     self.map[next(iter(c["bowser_candidates"]))]["bowser"] = True
+                    for c2 in self.map.values():
+                        c2["bowser_candidates"].clear()
 
 
     def _move_to(self, pos, target):
