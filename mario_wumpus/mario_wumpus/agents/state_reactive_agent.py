@@ -6,21 +6,41 @@ from .base import BaseAgent
 from ..core.actions import Action
 from ..core.models import Percept
 
+from collections import deque
+
 
 class StateAgent(BaseAgent):
     """
-    Agente reativo com estados:
+    Agente reativo com estados baseado em mapa:
+    
+    -> possui um mapa interno (dicionário) com os estados: 'visited', 'safe', 'pit', 'bowser', 
+    'pit_candidates' e 'bowser_candidates' (conjuntos de celulas vizinhas candidatas)
+    -> estratégia principal: prioriza exploração segura, usa inferências para identificar perigos, atira em Bowser quando possível
+    
+    atualização do mapa com percepções:
+    - no primeiro turno, salva o valor de N do grid
+    (usado para calcular a posicao de vizinhos validos, excluindo paredes)
 
-    mapa = visitado, seguro, possivel_poco, possivel_bowser
-    comeca: mapa vazio, tudo FALSE, posicao inicial (N,1): visitado e seguro
+    - marca a posição atual como visitada e segura
+    - para cada vizinho:
+      - se não há brisa, vizinhos não têm poços / se há brisa, adiciona vizinhos como candidatos a poço
+      - se não há fedor, vizinhos não têm Bowser / se há fedor e Bowser não foi encontrado ainda, adiciona vizinhos como candidatos a Bowser
+      - se não há brisa nem fedor, vizinhos são seguros
 
-    -> atualizar mapa percepcoes
-       -> pega os vizinhos (ja excluindo as paredes)
-       -> marcar percepcoes
+    - se há grito, Bowser foi morto: todas as células são seguras e candidatos a Bowser são limpos
+    - após tiro sem grito, a célula alvo é marcada como segura
+    
+    inferências: 
+    - reduz candidatos com base nas percepções atualizadas
+    - se restar apenas um candidato para poço ou Bowser, marca como encontrado
 
-    -> decidir proxima celula a partir do mapa
-       -> se nao conseguir decidir, arrisca
-
+    decisão de ação e movimentação:
+    - se há brilho, executa RESCUE
+    - se estava mirando, executa SHOOT
+    - se há fedor e possui fireball, mira em Bowser conhecido ou candidato aleatório
+    - busca via BFS a próxima célula segura não visitada
+    - se não encontrar, arrisca mover para célula desconhecida
+    - caso contrário, movimento aleatório    
     """
 
     def __init__(self, seed: int | None = None):
@@ -48,11 +68,11 @@ class StateAgent(BaseAgent):
         row, col = pos
         neighbors = [] # vetor de tuplas com a posicao
         
-        if row > 1:                            # celula de cima
+        if row > 0:                            # celula de cima
             neighbors.append((row - 1, col))   
         if row < self.N:                       # celula de baixo
             neighbors.append((row + 1, col))
-        if col > 1:                            # celula da esquerda
+        if col > 0:                            # celula da esquerda
             neighbors.append((row, col - 1))
         if col < self.N:                       # celula da direita
             neighbors.append((row, col + 1))
@@ -86,7 +106,7 @@ class StateAgent(BaseAgent):
         cell["pit"] = False
         cell["bowser"] = False
 
-        # para cada coordenada vizinha, se nao esta no mapa, cria
+        # para cada vizinho, se nao esta no mapa, cria
         neighbors = self._neighbors(pos)
         for n in neighbors: 
             if n not in self.map:
@@ -99,60 +119,50 @@ class StateAgent(BaseAgent):
                     "bowser_candidates": set(),
                 }
 
-        # vizinhos seguros
+        # BREEZE
         if not percept.breeze:
             for n in neighbors:
                 self.map[n]["pit"] = False
-                
-        if not percept.stink:
-            for n in neighbors:
-                self.map[n]["bowser"] = False
-
-        if not percept.breeze and not percept.stink:
-            for n in neighbors:
-                self.map[n]["safe"] = True
-
-        # suspeitas -> adiciona vizinhos como candidatos
-        if percept.breeze:
+        if percept.breeze:                                 # adiciona vizinhos como celulas condidatas
             cell["pit_candidates"] = { 
                 n for n in neighbors 
                 if self.map[n]["pit"] is not False and self.map[n]["safe"] is not True
             } 
 
+        # STINK 
+        if not percept.stink:
+            for n in neighbors:
+                self.map[n]["bowser"] = False
         if percept.stink and not any(c.get("bowser") is True for c in self.map.values()):
             cell["bowser_candidates"] = {
                 n for n in neighbors
                 if self.map[n]["bowser"] is not False and self.map[n]["safe"] is not True
-            }
+            }   
         
-        # bowser morreu
+        # safe
+        if not percept.breeze and not percept.stink:
+            for n in neighbors:
+                self.map[n]["safe"] = True
+        
+        # SCREAM
         if percept.scream:
             for c in self.map.values():
                 c["bowser"] = False
+                c["safe"] = True
                 c["bowser_candidates"].clear()
-                if c["pit"] is False:                      # se a célula não tem poço, ela vira segura
-                    c["safe"] = True
-
-        # se bowser nao morreu e acabou de atirar
-        elif self.just_shot and self.shot_position:
+        elif self.just_shot and self.shot_position:        # se acabou de atirar e bowser nao morreu, celula esta segura
             self.map[self.shot_position]["bowser"] = False
-            self.map[self.shot_position]["pit"] = False
-            self.map[self.shot_position]["safe"] = True
-            
+            self.shot_position = None                      # reseta a posição e o estado do tiro
+            self.just_shot = False
 
-        # reseta a posição e o estado do tiro
-        self.shot_position = None
-        self.just_shot = False
-
-        # atualizacao global
+        # inferencias
         for p, c in self.map.items():
             if c["pit_candidates"]: 
                 c["pit_candidates"] = { 
                     n for n in c["pit_candidates"] 
                     if self.map[n]["pit"] is not False and self.map[n]["safe"] is not True
                 }
-                # se sobrou so 1 candidato, achou um poco
-                if len(c["pit_candidates"]) == 1: 
+                if len(c["pit_candidates"]) == 1:          # se sobrou so 1 candidata, achou um poco
                     self.map[next(iter(c["pit_candidates"]))]["pit"] = True
 
             if c["bowser_candidates"]: 
@@ -160,11 +170,13 @@ class StateAgent(BaseAgent):
                     n for n in c["bowser_candidates"] 
                     if self.map[n]["bowser"] is not False and self.map[n]["safe"] is not True
                 }
-                # se sobrou so 1 candidato, achou o bowser
-                if len(c["bowser_candidates"]) == 1: 
+                if len(c["bowser_candidates"]) == 1:       # se sobrou so 1 candidato, achou o bowser
                     self.map[next(iter(c["bowser_candidates"]))]["bowser"] = True
                     for c2 in self.map.values():
                         c2["bowser_candidates"].clear()
+
+            if self.map[n]["pit"] is False and self.map[n]["bowser"] is False and self.map[n]["safe"] is None:
+                self.map[n]["safe"] = True
 
 
     def _move_to(self, pos, target):
@@ -177,26 +189,24 @@ class StateAgent(BaseAgent):
         if d_col < 0: return Action.MOVE_LEFT
 
     def _bfs_next_safe(self, start) -> None:
-        from collections import deque
-
         queue = deque([start])
         parent = {start: None}
 
         while queue:
             current = queue.popleft()
 
-            # achou um safe não visitado (exceto o start)
-            if (
-                current != start
+            if (current != start                           # seguro não visitado (exceto o start)
                 and self.map[current]["safe"] is True
-                and self.map[current]["visited"] is False
-            ):
-                # reconstrói só o primeiro passo
+                and self.map[current]["visited"] is False):
+
                 while parent[current] != start:
                     current = parent[current]
                 return current
 
-            for n in self._neighbors(current):
+            neighbors = self._neighbors(current)           
+            self.rng.shuffle(neighbors)                    # embaralha a lista de vizinhos a cada execucao
+
+            for n in neighbors:
                 if n not in parent and self.map.get(n, {}).get("safe") is True:
                     parent[n] = current
                     queue.append(n)
@@ -204,66 +214,52 @@ class StateAgent(BaseAgent):
 
     def act(self, percept: Percept, legal_actions: list[Action]) -> Action:
         pos = percept.position.as_tuple()
-        row, col = pos
 
+        # RESCUE
         if percept.glitter:
             return Action.RESCUE
         
         self._update_map(percept)
 
-        print(self.map)
-        print("\n")
-
+        # SHOOT
         if self.is_aiming:
             self.is_aiming = False
             self.just_shot = True
-            return Action.SHOOT        
-
+            return Action.SHOOT 
+        
+        # AIM 
         if percept.stink and percept.has_fireball:
-            # procura se achou o bowser, se nao, seleciona as celulas candidatas
             bowser_known = [
                 p for p, c in self.map.items()
                 if c.get("bowser") is True
             ]
-            if bowser_known:                 
+            if bowser_known:                               # mirar no bowser ja conhecido ou em uma das celulas candidatas
                 target = bowser_known[0]
             else:
                 targets = [
                     n for n in self.map.get(pos, {}).get("bowser_candidates", set())
                     if self.map.get(n, {}).get("bowser") is not False
                 ]
+                target = self.rng.choice(targets)
 
-                if not targets:
-                    # fallback: qualquer vizinho possível
-                    targets = [
-                        n for n in self._neighbors(pos)
-                        if self.map.get(n, {}).get("bowser") is not False
-                    ]
+            self.shot_position = target
+            self.is_aiming = True
+            
+            d_row = target[0] - pos[0]                     # calcula a direcao do alvo para mirar
+            d_col = target[1] - pos[1]
 
-                if targets:
-                    target = self.rng.choice(targets)
-                else:
-                    target = None
-
-            if target:
-                self.shot_position = target
-                self.is_aiming = True
-                
-                d_row = target[0] - pos[0]                 # calcula a direcao do alvo para mirar
-                d_col = target[1] - pos[1]
-
-                if d_row < 0: return Action.AIM_UP
-                if d_row > 0: return Action.AIM_DOWN
-                if d_col > 0: return Action.AIM_RIGHT
-                if d_col < 0: return Action.AIM_LEFT
+            if d_row < 0: return Action.AIM_UP
+            if d_row > 0: return Action.AIM_DOWN
+            if d_col > 0: return Action.AIM_RIGHT
+            if d_col < 0: return Action.AIM_LEFT
         
+        # BFS
         next_pos = self._bfs_next_safe(pos)
         if next_pos:
             return self._move_to(pos, next_pos)
         
+        # ARRISCAR
         valid_neighbors = self._neighbors(pos)
-
-        # arriscar
         unknown = [
             n for n in valid_neighbors
             if self.map.get(n, {}).get("safe") is None
@@ -273,5 +269,6 @@ class StateAgent(BaseAgent):
         if unknown:
             return self._move_to(pos, self.rng.choice(unknown))
 
-        # fallback
-        return self.rng.choice(legal_actions)
+        return self.rng.choice(
+            [Action.MOVE_UP, Action.MOVE_RIGHT, Action.MOVE_DOWN, Action.MOVE_LEFT]
+        )
