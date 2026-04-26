@@ -136,6 +136,9 @@ class StateAgent(BaseAgent):
         # se bowser nao morreu e acabou de atirar
         elif self.just_shot and self.shot_position:
             self.map[self.shot_position]["bowser"] = False
+            self.map[self.shot_position]["pit"] = False
+            self.map[self.shot_position]["safe"] = True
+            
 
         # reseta a posição e o estado do tiro
         self.shot_position = None
@@ -173,6 +176,32 @@ class StateAgent(BaseAgent):
         if d_col > 0: return Action.MOVE_RIGHT
         if d_col < 0: return Action.MOVE_LEFT
 
+    def _bfs_next_safe(self, start) -> None:
+        from collections import deque
+
+        queue = deque([start])
+        parent = {start: None}
+
+        while queue:
+            current = queue.popleft()
+
+            # achou um safe não visitado (exceto o start)
+            if (
+                current != start
+                and self.map[current]["safe"] is True
+                and self.map[current]["visited"] is False
+            ):
+                # reconstrói só o primeiro passo
+                while parent[current] != start:
+                    current = parent[current]
+                return current
+
+            for n in self._neighbors(current):
+                if n not in parent and self.map.get(n, {}).get("safe") is True:
+                    parent[n] = current
+                    queue.append(n)
+
+
     def act(self, percept: Percept, legal_actions: list[Action]) -> Action:
         pos = percept.position.as_tuple()
         row, col = pos
@@ -182,9 +211,8 @@ class StateAgent(BaseAgent):
         
         self._update_map(percept)
 
-        # salva caminho na pilha
-        if not self.path or self.path[-1] != pos:
-            self.path.append(pos)
+        print(self.map)
+        print("\n")
 
         if self.is_aiming:
             self.is_aiming = False
@@ -192,12 +220,32 @@ class StateAgent(BaseAgent):
             return Action.SHOOT        
 
         if percept.stink and percept.has_fireball:
-            targets = [                                    # celulas alvos, possiveis de ter o bowser
-                n for n in self.map.get(pos, {}).get("bowser_candidates", set())
-                if self.map.get(n, {}).get("bowser") is not False
+            # procura se achou o bowser, se nao, seleciona as celulas candidatas
+            bowser_known = [
+                p for p, c in self.map.items()
+                if c.get("bowser") is True
             ]
-            if targets:
-                target = self.rng.choice(targets)          # se tiver varios, escolhe um 
+            if bowser_known:                 
+                target = bowser_known[0]
+            else:
+                targets = [
+                    n for n in self.map.get(pos, {}).get("bowser_candidates", set())
+                    if self.map.get(n, {}).get("bowser") is not False
+                ]
+
+                if not targets:
+                    # fallback: qualquer vizinho possível
+                    targets = [
+                        n for n in self._neighbors(pos)
+                        if self.map.get(n, {}).get("bowser") is not False
+                    ]
+
+                if targets:
+                    target = self.rng.choice(targets)
+                else:
+                    target = None
+
+            if target:
                 self.shot_position = target
                 self.is_aiming = True
                 
@@ -208,34 +256,22 @@ class StateAgent(BaseAgent):
                 if d_row > 0: return Action.AIM_DOWN
                 if d_col > 0: return Action.AIM_RIGHT
                 if d_col < 0: return Action.AIM_LEFT
-
+        
+        next_pos = self._bfs_next_safe(pos)
+        if next_pos:
+            return self._move_to(pos, next_pos)
+        
         valid_neighbors = self._neighbors(pos)
-
-        # seguro e nao visitado
-        safe_unvisited = [
-            n for n in valid_neighbors
-            if self.map.get(n, {}).get("safe") is True
-            and self.map.get(n, {}).get("visited") is False
-        ]
-
-        if safe_unvisited:
-            choice = self.rng.choice(safe_unvisited)
-            return self._move_to(pos, choice)
-
-        # backtrack
-        if len(self.path) > 1:
-            removed = self.path.pop()
-            return self._move_to(pos, self.path[-1])
 
         # arriscar
         unknown = [
             n for n in valid_neighbors
             if self.map.get(n, {}).get("safe") is None
+            and self.map.get(n, {}).get("pit") is not True
+            and self.map.get(n, {}).get("bowser") is not True
         ]
-
         if unknown:
-            target = self.rng.choice(unknown)
-            return self._move_to(pos, target)
+            return self._move_to(pos, self.rng.choice(unknown))
 
         # fallback
         return self.rng.choice(legal_actions)
