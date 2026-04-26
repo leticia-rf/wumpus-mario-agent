@@ -152,6 +152,7 @@ class StateAgent(BaseAgent):
                 c["bowser_candidates"].clear()
         elif self.just_shot and self.shot_position:        # se acabou de atirar e bowser nao morreu, celula esta segura
             self.map[self.shot_position]["bowser"] = False
+            self.map[self.shot_position]["safe"] = True
             self.shot_position = None                      # reseta a posição e o estado do tiro
             self.just_shot = False
 
@@ -175,8 +176,8 @@ class StateAgent(BaseAgent):
                     for c2 in self.map.values():
                         c2["bowser_candidates"].clear()
 
-            if self.map[n]["pit"] is False and self.map[n]["bowser"] is False and self.map[n]["safe"] is None:
-                self.map[n]["safe"] = True
+            if c["pit"] is False and c["bowser"] is False and c["safe"] is None:
+                c["safe"] = True
 
 
     def _move_to(self, pos, target):
